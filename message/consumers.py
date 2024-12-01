@@ -1,6 +1,5 @@
 import asyncio
 import json
-from datetime import datetime
 from uuid import uuid4
 
 import environ
@@ -35,7 +34,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             bootstrap_servers=env("KAFKA_BROKER_URL"),
             group_id=self.kafka_group_id,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-            auto_offset_reset="earliest",
+            auto_offset_reset="latest",
         )
         await self.consumer.start()
 
@@ -77,27 +76,48 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         Обрабатывает входящие сообщения от клиента.
         """
-        message = text_data.strip()
+        # Попытка распарсить JSON
+        try:
+            data = json.loads(text_data)
 
-        # Отправка сообщения в Kafka
-        await self.producer.send_and_wait(
-            self.topic_name,
-            {
-                "group_name": self.group_name,
-                "message": message,
-                "sender_channel": self.channel_name,
-                "time": datetime.now().timestamp(),
-            },
-        )
+            user_id = data.get("user_id")
+            message_content = data.get("message", {}).get("content")
+            message_time = data.get("message", {}).get("time")
 
-        # Отправка подтверждения клиенту
-        await self.send(text_data=json.dumps({
-            "status": "ok",
-            "message": {
-                "content": message,
-                "time": datetime.now().timestamp(),
-            },
-        }))
+            # Обработка неправильной структуры данных
+            if not user_id or not message_content or not message_time:
+                await self.send(text_data=json.dumps({
+                    "status": "error",
+                    "time": message_time if message_time is not None else None,
+                }))
+                print("Invalid JSON structure")
+                return
+
+            # Отправка сообщения в Kafka
+            await self.producer.send_and_wait(
+                self.topic_name,
+                {
+                    "group_name": self.group_name,
+                    "user_id": user_id,
+                    "content": message_content,
+                    "time": message_time,
+                    "sender_channel": self.channel_name,
+                },
+            )
+
+            # Отправка подтверждения клиенту
+            await self.send(text_data=json.dumps({
+                "status": "ok",
+                "time": message_time,
+            }))
+
+        # Обработка неправильного формата данных
+        except json.JSONDecodeError:
+            await self.send(text_data=json.dumps({
+                "status": "error",
+                "time": None,
+            }))
+            print("Invalid JSON format")
 
     async def listen_to_kafka(self):
         """Асинхронное прослушивание сообщений из Kafka."""
@@ -113,12 +133,16 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         Отправка сообщения WebSocket-клиенту.
         """
         sender_channel = data.get("sender_channel")
+        user_id = data.get("user_id")
+        content = data.get("content")
+        time = data.get("time")
+
         if data.get("group_name") == self.group_name and sender_channel != self.channel_name:
             # Отправляем сообщение
             await self.send(text_data=json.dumps({
-                "user_id": "uuid",
+                "user_id": user_id,
                 "message": {
-                    "content": data["message"],
-                    "time": data["time"],
+                    "content": content,
+                    "time": time,
                 },
-            }))
+            }, ensure_ascii=False))
