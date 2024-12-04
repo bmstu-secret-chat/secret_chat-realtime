@@ -13,4 +13,4 @@ COPY . /app
 
 RUN pip3 install --upgrade pip &&  pip3 install -r ./requirements.txt --no-cache-dir
 
-CMD ["sh", "-c", "daphne -e ssl:$PORT:privateKey=/app/certs/server.key:certKey=/app/certs/server.crt realtime.asgi:application"]
+CMD ["sh", "-c", "daphne -p $PORT -b 0.0.0.0 realtime.asgi:application"]
