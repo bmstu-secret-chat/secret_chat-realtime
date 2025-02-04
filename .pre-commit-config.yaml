@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/timothycrosley/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        name: isort (Python import sorter)
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        name: flake8 (Python linter)
+
+  - repo: local
+    hooks:
+      - id: update-requirements
+        name: Update requirements.txt
+        entry: python -m pip freeze > requirements.txt
+        language: system
+        always_run: true
