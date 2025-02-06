@@ -1,12 +1,20 @@
 import asyncio
 import json
-from uuid import uuid4
+import uuid
 
 import environ
+import httpx
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+from channels.exceptions import StopConsumer
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 env = environ.Env()
+
+INTERNAL_SECRET_KEY = env("INTERNAL_SECRET_KEY")
+
+NGINX_URL = env("NGINX_URL")
+
+BACKEND_PATH = "api/backend"
 
 
 class MessengerConsumer(AsyncWebsocketConsumer):
@@ -17,9 +25,19 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         Выполняется при подключении нового клиента к WebSocket.
         """
+        user_id = self.scope["url_route"]["kwargs"]["user_id"]
+
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            print("user_id должен быть в формате uuid")
+            raise StopConsumer
+
+        await self.update_user_status(user_id, True)
+
         self.group_name = "messenger_group"
         self.topic_name = "messenger_topic"
-        self.kafka_group_id = f"{self.group_name}_{str(uuid4())}"
+        self.kafka_group_id = f"{self.group_name}_{str(uuid.uuid4())}"
 
         # Инициализация Kafka Producer
         self.producer = AIOKafkaProducer(
@@ -54,6 +72,10 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         Выполняется при отключении клиента от WebSocket.
         """
+        user_id = self.scope["url_route"]["kwargs"]["user_id"]
+
+        await self.update_user_status(user_id, False)
+
         # Завершение задачи Kafka Consumer, если она ещё работает
         if hasattr(self, "consumer_task") and not self.consumer_task.done():
             self.consumer_task.cancel()
@@ -71,6 +93,17 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             self.group_name,
             self.channel_name
         )
+
+    async def update_user_status(self, user_id, status):
+        """
+        Обновление статуса пользователя.
+        """
+        async with httpx.AsyncClient(verify=False) as client:
+            await client.patch(
+                f"{NGINX_URL}/{BACKEND_PATH}/users/status/",
+                headers={"X-Internal-Secret": INTERNAL_SECRET_KEY},
+                json={"user_id": user_id, "is_online": status}
+            )
 
     async def receive(self, text_data):
         """
