@@ -1,7 +1,9 @@
 from django.urls import path
 
-from .views import send_message
+from .views import create_secret_chat_view
+
+app_name = "messenger"
 
 urlpatterns = [
-    path('send/', send_message, name='send_message'),
+    path("secret-chat/create/", create_secret_chat_view, name="create-secret-chat"),
 ]
