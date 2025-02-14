@@ -25,7 +25,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         Выполняется при подключении нового клиента к WebSocket.
         """
-        self.user_id = self.scope["url_route"]["kwargs"]["user_id"]
+        self.user_id = self.scope["user_id"]
 
         try:
             uuid.UUID(self.user_id)
