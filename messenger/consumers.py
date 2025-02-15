@@ -8,13 +8,17 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from channels.exceptions import StopConsumer
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from .utils import get_secret_chat_users, remove_secret_chats, update_user_status
+from .utils import get_secret_chat_users, remove_secret_chat, remove_secret_chats_of_user, update_user_status
 
 logger = logging.getLogger(__name__)
 
 env = environ.Env()
 
 KAFKA_BROKER_URL = env("KAFKA_BROKER_URL")
+
+MESSENGER_TOPIC = "messenger_topic"
+
+ACTIONS_TOPIC = "actions_topic"
 
 
 class MessengerConsumer(AsyncWebsocketConsumer):
@@ -36,36 +40,54 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         await update_user_status(self.user_id, True)
 
         self.group_name = f"user_{self.user_id}"
-        self.topic_name = "messenger_topic"
-        self.kafka_group_id = f"{self.group_name}_{str(uuid.uuid4())}"
+        self.kafka_group_id = f"user_{self.user_id}"
 
-        # Инициализация Kafka Producer
-        self.producer = AIOKafkaProducer(
+        self.websocket_producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BROKER_URL,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
-        await self.producer.start()
+        self.disconnect_producer = AIOKafkaProducer(
+            bootstrap_servers=KAFKA_BROKER_URL,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        )
+        self.backend_producer = AIOKafkaProducer(
+            bootstrap_servers=KAFKA_BROKER_URL,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+        )
 
-        # Инициализация Kafka Consumer
-        self.consumer = AIOKafkaConsumer(
-            self.topic_name,
+        await asyncio.gather(
+            self.websocket_producer.start(),
+            self.disconnect_producer.start(),
+            self.backend_producer.start()
+        )
+
+        self.messenger_consumer = AIOKafkaConsumer(
+            MESSENGER_TOPIC,
             bootstrap_servers=KAFKA_BROKER_URL,
             group_id=self.kafka_group_id,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             auto_offset_reset="latest",
         )
-        await self.consumer.start()
+        self.actions_consumer = AIOKafkaConsumer(
+            ACTIONS_TOPIC,
+            bootstrap_servers=KAFKA_BROKER_URL,
+            group_id=f"{self.kafka_group_id}_actions",
+            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            auto_offset_reset="latest",
+        )
 
-        # Запуск задачи для прослушивания сообщений из Kafka
-        self.consumer_task = asyncio.create_task(self.listen_to_kafka())
+        await asyncio.gather(
+            self.messenger_consumer.start(),
+            self.actions_consumer.start()
+        )
 
-        # Добавление клиента в группу WebSocket-каналов
+        self.messenger_task = asyncio.create_task(self.listen_to_messenger())
+        self.actions_task = asyncio.create_task(self.listen_to_actions())
+
         await self.channel_layer.group_add(
             self.group_name,
             self.channel_name,
         )
-
-        # Подтверждение соединения с клиентом
         await self.accept()
 
     async def disconnect(self, close_code):
@@ -74,25 +96,29 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         await update_user_status(self.user_id, False)
 
-        # Завершение задачи Kafka Consumer, если она ещё работает
-        if hasattr(self, "consumer_task") and not self.consumer_task.done():
-            self.consumer_task.cancel()
+        if hasattr(self, "messenger_task") and not self.messenger_task.done():
+            self.messenger_task.cancel()
+        if hasattr(self, "actions_task") and not self.actions_task.done():
+            self.actions_task.cancel()
 
-        # Остановка Kafka Consumer
-        if hasattr(self, "consumer"):
-            await self.consumer.stop()
+        if hasattr(self, "messenger_consumer"):
+            await self.messenger_consumer.stop()
+        if hasattr(self, "actions_consumer"):
+            await self.actions_consumer.stop()
 
-        # Остановка Kafka Producer
-        if hasattr(self, "producer"):
-            await self.producer.stop()
+        if hasattr(self, "websocket_producer"):
+            await self.websocket_producer.stop()
+        if hasattr(self, "disconnect_producer"):
+            await self.disconnect_producer.stop()
+        if hasattr(self, "backend_producer"):
+            await self.backend_producer.stop()
 
-        # Удаление клиента из группы WebSocket-каналов
         await self.channel_layer.group_discard(
             self.group_name,
             self.channel_name
         )
 
-        await remove_secret_chats(self.user_id)
+        await remove_secret_chats_of_user(self.user_id)
 
     async def receive(self, text_data):
         """
@@ -100,21 +126,14 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
-
-            id = data.get("id")
             type = data.get("type")
-            chat_id = data["payload"]["chat_id"]
 
-            if type == "delete_chat":
-                await remove_secret_chats(self.user_id)
-                return
+            match type:
+                case "send_message":
+                    await self.websocket_producer.send_and_wait(MESSENGER_TOPIC, text_data)
 
-            # Отправка сообщения в Kafka
-            await self.producer.send_and_wait(self.topic_name, text_data)
-
-            # Отправка подтверждения клиенту
-            payload = {"chat_id": chat_id, "status": "ok"}
-            await self.send_notification(id, "send_message_response", payload)
+                case "delete_chat":
+                    await self.websocket_producer.send_and_wait(ACTIONS_TOPIC, text_data)
 
         except json.JSONDecodeError:
             logger.error("Ошибка декодирования JSON в receive: %s", text_data)
@@ -123,18 +142,30 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
     async def send_chat_notification(self, event):
         """
-        Отправка уведомлений о чате.
+        Отправка уведомлений о чате в Kafka.
         """
-        await self.send_notification(event["id"], event["notification_type"], event["payload"])
+        type = event["notification_type"]
+        message = {
+            "id": event["id"],
+            "type": type,
+            "payload": event["payload"],
+        }
 
-    async def send_notification(self, id, type, payload):
+        match type:
+            case "create_chat":
+                await self.backend_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
+
+            case "delete_chat":
+                await self.disconnect_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
+
+    async def delete_chat_notification(self, event):
         """
-        Отправка уведомлений.
+        Отправка уведомлений об удалении чата.
         """
         await self.send(text_data=json.dumps({
-            "id": id,
-            "type": type,
-            "payload": payload,
+            "id": event["id"],
+            "type": event["notification_type"],
+            "payload": event["payload"],
         }))
 
     async def process_kafka_message(self, text_data):
@@ -144,6 +175,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         try:
             data = json.loads(text_data)
 
+            id = data.get("id")
             chat_id = data["payload"]["chat_id"]
             sender_id = data.get("payload", {}).get("user_id", self.user_id)
 
@@ -154,19 +186,63 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
             if self.user_id != sender_id:
                 await self.send(text_data=json.dumps(data, ensure_ascii=False))
+            else:
+                message = {
+                    "id": id,
+                    "type": "send_message_response",
+                    "payload": {
+                        "chat_id": chat_id,
+                        "status": "ok"
+                    }
+                }
+                await self.send(text_data=json.dumps(message))
 
         except json.JSONDecodeError:
             logger.error("Ошибка декодирования JSON в process_kafka_message: %s", text_data)
         except KeyError as e:
             logger.error("Отсутствует ключ %s в JSON в process_kafka_message: %s", e, text_data)
 
-    async def listen_to_kafka(self):
+    async def process_kafka_action(self, text_data):
+        """
+        Обрабатывает действия из Kafka и отправляет его WebSocket-клиенту.
+        """
+        try:
+            data = json.loads(text_data)
+            type = data.get("type")
+
+            match type:
+                case "delete_chat":
+                    id = data.get("id")
+                    chat_id = data["payload"]["chat_id"]
+                    await remove_secret_chat(id, chat_id)
+
+                case "create_chat":
+                    with_user_id = data["payload"]["with_user_id"]
+
+                    if self.user_id != with_user_id:
+                        await self.send(text_data=json.dumps(data, ensure_ascii=False))
+
+        except json.JSONDecodeError:
+            logger.error("Ошибка декодирования JSON в process_kafka_action: %s", text_data)
+        except KeyError as e:
+            logger.error("Отсутствует ключ %s в JSON в process_kafka_action: %s", e, text_data)
+
+    async def listen_to_messenger(self):
         """
         Асинхронное прослушивание сообщений из Kafka.
         """
         try:
-            async for message in self.consumer:
-                # Обработка полученного сообщения
+            async for message in self.messenger_consumer:
                 await self.process_kafka_message(message.value)
+        except asyncio.CancelledError:
+            pass
+
+    async def listen_to_actions(self):
+        """
+        Асинхронное прослушивание действий из Kafka.
+        """
+        try:
+            async for message in self.actions_consumer:
+                await self.process_kafka_action(message.value)
         except asyncio.CancelledError:
             pass

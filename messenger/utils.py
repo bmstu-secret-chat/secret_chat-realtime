@@ -59,9 +59,9 @@ def send_create_chat_notification(user_id, with_user_id, chat_id, chat_type):
     )
 
 
-async def remove_secret_chats(user_id):
+async def remove_secret_chats_of_user(user_id):
     """
-    Удаление секретных чатов.
+    Удаление секретных чатов пользователя.
     """
     chat_ids = redis_client.smembers(f"user:{user_id}:secret_chats")
 
@@ -86,3 +86,28 @@ async def remove_secret_chats(user_id):
                         "payload": payload,
                     },
                 )
+
+
+async def remove_secret_chat(id, chat_id):
+    """
+    Удаление секретного чата.
+    """
+    payload = {"chat_id": chat_id}
+    chat_users = get_secret_chat_users(chat_id)
+
+    for chat_user_id in chat_users:
+        redis_client.srem(f"user:{chat_user_id}:secret_chats", chat_id)
+
+    redis_client.delete(f"secret_chat:{chat_id}:users")
+    redis_client.delete(f"secret_chat:{chat_id}")
+
+    for chat_user_id in chat_users:
+        await channel_layer.group_send(
+            f"user_{chat_user_id}",
+            {
+                "type": "delete_chat_notification",
+                "id": id,
+                "notification_type": "delete_chat",
+                "payload": payload,
+            },
+        )
