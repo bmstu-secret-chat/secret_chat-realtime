@@ -208,18 +208,21 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
+
             type = data.get("type")
+            chat_id = data["payload"]["chat_id"]
 
             match type:
                 case "delete_chat":
                     id = data.get("id")
-                    chat_id = data["payload"]["chat_id"]
                     await remove_secret_chat(id, chat_id)
 
                 case "create_chat":
                     with_user_id = data["payload"]["with_user_id"]
 
-                    if self.user_id != with_user_id:
+                    chat_users = get_secret_chat_users(chat_id)
+
+                    if self.user_id in chat_users and self.user_id != with_user_id:
                         await self.send(text_data=json.dumps(data, ensure_ascii=False))
 
         except json.JSONDecodeError:
