@@ -1,5 +1,3 @@
-from urllib.parse import parse_qs
-
 import environ
 import requests
 from channels.db import database_sync_to_async
@@ -19,9 +17,12 @@ class TokenAuthenticationMiddleware(BaseMiddleware):
     Middleware для проверки авторизации пользователя при подключении к WebSocket.
     """
     async def __call__(self, scope, receive, send):
-        query_string = parse_qs(scope["query_string"].decode())
+        headers = dict(scope.get("headers", []))
 
-        access_token = query_string.get("access_token", [None])[0]
+        cookies_header = headers.get(b"cookie", b"").decode("utf-8")
+        cookies = dict(cookie.split("=") for cookie in cookies_header.split("; ") if "=" in cookie)
+
+        access_token = cookies.get("access")
 
         if not access_token:
             await send({"type": "websocket.close"})
