@@ -47,7 +47,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             bootstrap_servers=KAFKA_BROKER_URL,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
-        self.disconnect_producer = AIOKafkaProducer(
+        self.realtime_producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BROKER_URL,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
@@ -58,7 +58,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
         await asyncio.gather(
             self.websocket_producer.start(),
-            self.disconnect_producer.start(),
+            self.realtime_producer.start(),
             self.backend_producer.start()
         )
 
@@ -109,8 +109,8 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
         if hasattr(self, "websocket_producer"):
             await self.websocket_producer.stop()
-        if hasattr(self, "disconnect_producer"):
-            await self.disconnect_producer.stop()
+        if hasattr(self, "realtime_producer"):
+            await self.realtime_producer.stop()
         if hasattr(self, "backend_producer"):
             await self.backend_producer.stop()
 
@@ -157,7 +157,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
                 await self.backend_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
 
             case "delete_chat":
-                await self.disconnect_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
+                await self.realtime_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
 
     async def delete_chat_notification(self, event):
         """
