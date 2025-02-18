@@ -59,21 +59,15 @@ def send_create_chat_notification(user_id, with_user_id, chat_id, chat_type):
     )
 
 
-async def remove_secret_chats_of_user(user_id):
+async def send_notifications_about_deleting_chats(user_id):
     """
-    Удаление секретных чатов пользователя.
+    Отправка уведомлений об удалении чатов.
     """
     chat_ids = redis_client.smembers(f"user:{user_id}:secret_chats")
 
     for chat_id in chat_ids:
         payload = {"chat_id": chat_id}
         chat_users = get_secret_chat_users(chat_id)
-
-        for chat_user_id in chat_users:
-            redis_client.srem(f"user:{chat_user_id}:secret_chats", chat_id)
-
-        redis_client.delete(f"secret_chat:{chat_id}:users")
-        redis_client.delete(f"secret_chat:{chat_id}")
 
         for chat_user_id in chat_users:
             if chat_user_id != user_id:
