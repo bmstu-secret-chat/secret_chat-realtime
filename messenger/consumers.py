@@ -41,7 +41,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         await update_user_status(self.user_id, True)
 
         self.group_name = f"user_{self.user_id}"
-        self.kafka_group_id = f"user_{self.user_id}"
+        self.kafka_group_id = f"user_{self.user_id}_{uuid.uuid4()}"
 
         self.websocket_producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BROKER_URL,
@@ -180,7 +180,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             chat_id = data["payload"]["chat_id"]
             sender_id = data.get("payload", {}).get("user_id", self.user_id)
 
-            chat_users = get_secret_chat_users(chat_id)
+            chat_users = await get_secret_chat_users(chat_id)
 
             if sender_id not in chat_users or self.user_id not in chat_users:
                 return
@@ -221,7 +221,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
                 case "create_chat":
                     with_user_id = data["payload"]["with_user_id"]
 
-                    chat_users = get_secret_chat_users(chat_id)
+                    chat_users = await get_secret_chat_users(chat_id)
 
                     if self.user_id in chat_users and self.user_id != with_user_id:
                         await self.send(text_data=json.dumps(data, ensure_ascii=False))
