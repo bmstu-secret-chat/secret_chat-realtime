@@ -8,7 +8,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from channels.exceptions import StopConsumer
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from .utils import (get_secret_chat_users, remove_secret_chat, send_notifications_about_deleting_chats,
+from .utils import (create_message, get_secret_chat_users, remove_secret_chat, send_notifications_about_deleting_chats,
                     update_user_status)
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,11 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
             id = data.get("id")
             chat_id = data["payload"]["chat_id"]
+            chat_type = data["payload"]["chat_type"]
             sender_id = data.get("payload", {}).get("user_id", self.user_id)
+
+            if chat_type == "default" and self.user_id == sender_id:
+                await create_message(id, data["payload"])
 
             chat_users = await get_secret_chat_users(chat_id)
 

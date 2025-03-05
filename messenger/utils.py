@@ -131,3 +131,17 @@ async def remove_secret_chat(id, chat_id):
                 "payload": payload,
             },
         )
+
+
+async def create_message(id, payload):
+    """
+    Создание сообщения.
+    """
+    chat_id = payload["chat_id"]
+
+    async with httpx.AsyncClient(verify=False) as client:
+        await client.post(
+            f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/message/",
+            headers={"X-Internal-Secret": INTERNAL_SECRET_KEY},
+            json={"id": id, "payload": payload}
+        )
