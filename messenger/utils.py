@@ -2,15 +2,12 @@ import uuid
 
 import environ
 import httpx
-import redis
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
 channel_layer = get_channel_layer()
 
 env = environ.Env()
-
-redis_client = redis.StrictRedis(host=env("REDIS_HOST"), port=env("REDIS_PORT"), db=0, decode_responses=True)
 
 INTERNAL_SECRET_KEY = env("INTERNAL_SECRET_KEY")
 
@@ -19,11 +16,45 @@ NGINX_URL = env("NGINX_URL")
 BACKEND_PATH = "api/backend"
 
 
-def get_secret_chat_users(chat_id):
+async def get_secret_chat_users(chat_id):
     """
-    Получение списка пользователей секретного чата из Redis.
+    Получение списка пользователей секретного чата.
     """
-    return redis_client.smembers(f"secret_chat:{chat_id}:users")
+    url = f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/users/"
+    headers = {"X-Internal-Secret": INTERNAL_SECRET_KEY}
+
+    async with httpx.AsyncClient(verify=False) as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            response.raise_for_status()
+
+
+async def get_user_secret_chats(user_id):
+    """
+    Получение списка секретных чатов конкретного пользователя.
+    """
+    url = f"{NGINX_URL}/{BACKEND_PATH}/users/{user_id}/secret-chats/"
+    headers = {"X-Internal-Secret": INTERNAL_SECRET_KEY}
+
+    async with httpx.AsyncClient(verify=False) as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            response.raise_for_status()
+
+
+async def delete_secret_chat(chat_id):
+    """
+    Удаление секретного чата.
+    """
+    async with httpx.AsyncClient(verify=False) as client:
+        await client.delete(
+            f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/",
+            headers={"X-Internal-Secret": INTERNAL_SECRET_KEY}
+        )
 
 
 async def update_user_status(user_id, status):
@@ -63,11 +94,11 @@ async def send_notifications_about_deleting_chats(user_id):
     """
     Отправка уведомлений об удалении чатов.
     """
-    chat_ids = redis_client.smembers(f"user:{user_id}:secret_chats")
+    chat_ids = await get_user_secret_chats(user_id)
 
     for chat_id in chat_ids:
         payload = {"chat_id": chat_id}
-        chat_users = get_secret_chat_users(chat_id)
+        chat_users = await get_secret_chat_users(chat_id)
 
         for chat_user_id in chat_users:
             if chat_user_id != user_id:
@@ -87,13 +118,8 @@ async def remove_secret_chat(id, chat_id):
     Удаление секретного чата.
     """
     payload = {"chat_id": chat_id}
-    chat_users = get_secret_chat_users(chat_id)
-
-    for chat_user_id in chat_users:
-        redis_client.srem(f"user:{chat_user_id}:secret_chats", chat_id)
-
-    redis_client.delete(f"secret_chat:{chat_id}:users")
-    redis_client.delete(f"secret_chat:{chat_id}")
+    chat_users = await get_secret_chat_users(chat_id)
+    await delete_secret_chat(chat_id)
 
     for chat_user_id in chat_users:
         await channel_layer.group_send(
@@ -104,4 +130,18 @@ async def remove_secret_chat(id, chat_id):
                 "notification_type": "delete_chat",
                 "payload": payload,
             },
+        )
+
+
+async def create_message(id, payload):
+    """
+    Создание сообщения.
+    """
+    chat_id = payload["chat_id"]
+
+    async with httpx.AsyncClient(verify=False) as client:
+        await client.post(
+            f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/message/",
+            headers={"X-Internal-Secret": INTERNAL_SECRET_KEY},
+            json={"id": id, "payload": payload}
         )
