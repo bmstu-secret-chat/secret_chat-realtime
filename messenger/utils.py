@@ -113,24 +113,23 @@ async def send_notifications_about_deleting_chats(user_id):
                 )
 
 
-async def remove_secret_chat(id, chat_id):
+async def remove_secret_chat(id, chat_id, user_id):
     """
     Удаление секретного чата.
     """
     payload = {"chat_id": chat_id}
-    chat_users = await get_secret_chat_users(chat_id)
+
     await delete_secret_chat(chat_id)
 
-    for chat_user_id in chat_users:
-        await channel_layer.group_send(
-            f"user_{chat_user_id}",
-            {
-                "type": "delete_chat_notification",
-                "id": id,
-                "notification_type": "delete_chat",
-                "payload": payload,
-            },
-        )
+    await channel_layer.group_send(
+        f"user_{user_id}",
+        {
+            "type": "delete_chat_notification",
+            "id": id,
+            "notification_type": "delete_chat",
+            "payload": payload,
+        },
+    )
 
 
 async def create_message(id, payload):
