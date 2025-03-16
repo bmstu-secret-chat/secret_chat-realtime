@@ -13,9 +13,9 @@ INTERNAL_SECRET_KEY = env("INTERNAL_SECRET_KEY")
 
 
 @api_view(["POST"])
-def create_secret_chat_view(request):
+def create_chat_view(request):
     """
-    Создание секретного чата.
+    Создание чата.
     """
     secret_key = request.headers.get("X-Internal-Secret")
 
@@ -39,6 +39,8 @@ def create_secret_chat_view(request):
         )
 
     send_create_chat_notification(user_id, with_user_id, chat_id, chat_type)
-    send_create_chat_notification(with_user_id, user_id, chat_id, chat_type)
 
-    return Response({"message": "Секретный чат создан"}, status=status.HTTP_201_CREATED)
+    if chat_type == "secret":
+        send_create_chat_notification(with_user_id, user_id, chat_id, chat_type)
+
+    return Response({"message": "Чат создан"}, status=status.HTTP_201_CREATED)
