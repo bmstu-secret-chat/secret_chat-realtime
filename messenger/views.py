@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import environ
@@ -6,7 +7,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .utils import send_create_chat_notification
+from .utils import get_key_notification, send_create_chat_notification, wait_for_private_key
 
 env = environ.Env()
 
@@ -50,3 +51,32 @@ def create_secret_chat_view(request):
     send_create_chat_notification(with_user_id, user_id, chat_id, chat_type)
 
     return Response({"message": "Секретный чат создан"}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def private_key_view(request):
+    """
+    Получение приватного ключа.
+    """
+    secret_key = request.headers.get("X-Internal-Secret")
+
+    if secret_key != INTERNAL_SECRET_KEY:
+        return Response({"error": "Отсутствует секретный ключ"}, status=status.HTTP_403_FORBIDDEN)
+
+    user_id = request.GET.get("user_id")
+
+    if not user_id:
+        return Response({"error": "Отсутствует user_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        return Response({"error": "user_id должен быть в формате uuid"}, status=status.HTTP_400_BAD_REQUEST)
+
+    get_key_notification(user_id)
+    private_key = asyncio.run(wait_for_private_key(user_id))
+
+    if private_key:
+        return Response({"private_key": private_key}, status=status.HTTP_200_OK)
+
+    return Response({"error": "Приватный ключ не получен"}, status=status.HTTP_408_REQUEST_TIMEOUT)

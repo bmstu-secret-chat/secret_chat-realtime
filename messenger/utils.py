@@ -1,3 +1,5 @@
+import asyncio
+import time
 import uuid
 
 import environ
@@ -105,3 +107,38 @@ async def remove_secret_chat(id, chat_id):
                 "payload": payload,
             },
         )
+
+
+def get_key_notification(user_id):
+    """
+    Отправка уведомления для получения приватного ключа.
+    """
+    payload = {"user_id": user_id}
+
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "get_key_notification",
+            "id": str(uuid.uuid4()),
+            "notification_type": "get_key",
+            "payload": payload,
+        },
+    )
+
+
+async def wait_for_private_key(user_id, timeout=5):
+    """
+    Ожидает получения приватного ключа в Redis.
+    """
+    redis_key = f"private_key:{user_id}"
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        private_key = redis_client.get(redis_key)
+        if private_key:
+            redis_client.delete(redis_key)
+            return private_key
+
+        await asyncio.sleep(0.1)
+
+    return None

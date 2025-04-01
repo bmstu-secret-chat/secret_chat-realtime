@@ -4,6 +4,7 @@ import logging
 import uuid
 
 import environ
+import redis
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from channels.exceptions import StopConsumer
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -14,6 +15,8 @@ from .utils import (get_secret_chat_users, remove_secret_chat, send_notification
 logger = logging.getLogger(__name__)
 
 env = environ.Env()
+
+redis_client = redis.StrictRedis(host=env("REDIS_HOST"), port=env("REDIS_PORT"), db=0)
 
 KAFKA_BROKER_URL = env("KAFKA_BROKER_URL")
 
@@ -136,6 +139,9 @@ class MessengerConsumer(AsyncWebsocketConsumer):
                 case "delete_chat":
                     await self.websocket_producer.send_and_wait(ACTIONS_TOPIC, text_data)
 
+                case "get_key_response":
+                    await self.websocket_producer.send_and_wait(ACTIONS_TOPIC, text_data)
+
         except json.JSONDecodeError:
             logger.error("Ошибка декодирования JSON в receive: %s", text_data)
         except KeyError as e:
@@ -168,6 +174,18 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             "type": event["notification_type"],
             "payload": event["payload"],
         }))
+
+    async def get_key_notification(self, event):
+        """
+        Отправка уведомления для получения приватного ключа.
+        """
+        type = event["notification_type"]
+        message = {
+            "id": event["id"],
+            "type": type,
+            "payload": event["payload"],
+        }
+        await self.backend_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
 
     async def process_kafka_message(self, text_data):
         """
@@ -209,22 +227,32 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
-
             type = data.get("type")
-            chat_id = data["payload"]["chat_id"]
 
             match type:
                 case "delete_chat":
                     id = data.get("id")
+                    chat_id = data["payload"]["chat_id"]
                     await remove_secret_chat(id, chat_id)
 
                 case "create_chat":
+                    chat_id = data["payload"]["chat_id"]
                     with_user_id = data["payload"]["with_user_id"]
 
                     chat_users = get_secret_chat_users(chat_id)
 
                     if self.user_id in chat_users and self.user_id != with_user_id:
                         await self.send(text_data=json.dumps(data, ensure_ascii=False))
+
+                case "get_key":
+                    user_id = data["payload"]["user_id"]
+                    if self.user_id == user_id:
+                        await self.send(text_data=json.dumps(data, ensure_ascii=False))
+
+                case "get_key_response":
+                    user_id = data["payload"]["user_id"]
+                    private_key = data["payload"]["key"]
+                    redis_client.set(f"private_key:{user_id}", private_key)
 
         except json.JSONDecodeError:
             logger.error("Ошибка декодирования JSON в process_kafka_action: %s", text_data)
