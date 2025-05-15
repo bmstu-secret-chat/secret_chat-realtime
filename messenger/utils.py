@@ -16,7 +16,7 @@ NGINX_URL = env("NGINX_URL")
 BACKEND_PATH = "api/backend"
 
 
-async def get_secret_chat_users(chat_id):
+async def get_chat_users(chat_id):
     """
     Получение списка пользователей секретного чата.
     """
@@ -53,6 +53,17 @@ async def delete_secret_chat(chat_id):
     async with httpx.AsyncClient(verify=False) as client:
         await client.delete(
             f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/",
+            headers={"X-Internal-Secret": INTERNAL_SECRET_KEY}
+        )
+
+
+async def clear_default_chat(chat_id):
+    """
+    Очищение обычного чата.
+    """
+    async with httpx.AsyncClient(verify=False) as client:
+        await client.delete(
+            f"{NGINX_URL}/{BACKEND_PATH}/chats/{chat_id}/messages/",
             headers={"X-Internal-Secret": INTERNAL_SECRET_KEY}
         )
 
@@ -98,7 +109,7 @@ async def send_notifications_about_deleting_chats(user_id):
 
     for chat_id in chat_ids:
         payload = {"chat_id": chat_id}
-        chat_users = await get_secret_chat_users(chat_id)
+        chat_users = await get_chat_users(chat_id)
 
         for chat_user_id in chat_users:
             if chat_user_id != user_id:
@@ -127,6 +138,25 @@ async def remove_secret_chat(id, chat_id, user_id):
             "type": "delete_chat_notification",
             "id": id,
             "notification_type": "delete_chat",
+            "payload": payload,
+        },
+    )
+
+
+async def clear_chat(id, chat_id, user_id):
+    """
+    Очищение чата.
+    """
+    payload = {"chat_id": chat_id}
+
+    await clear_default_chat(chat_id)
+
+    await channel_layer.group_send(
+        f"user_{user_id}",
+        {
+            "type": "clear_chat_notification",
+            "id": id,
+            "notification_type": "clear_chat",
             "payload": payload,
         },
     )
