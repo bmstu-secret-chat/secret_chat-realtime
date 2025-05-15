@@ -8,8 +8,8 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from channels.exceptions import StopConsumer
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from .utils import (get_secret_chat_users, remove_secret_chat, send_notifications_about_deleting_chats,
-                    update_user_status)
+from .utils import (clear_chat, create_message, get_chat_users, remove_secret_chat,
+                    send_notifications_about_deleting_chats, update_user_status)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class MessengerConsumer(AsyncWebsocketConsumer):
         await update_user_status(self.user_id, True)
 
         self.group_name = f"user_{self.user_id}"
-        self.kafka_group_id = f"user_{self.user_id}"
+        self.kafka_group_id = f"user_{self.user_id}_{uuid.uuid4()}"
 
         self.websocket_producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BROKER_URL,
@@ -136,6 +136,9 @@ class MessengerConsumer(AsyncWebsocketConsumer):
                 case "delete_chat":
                     await self.websocket_producer.send_and_wait(ACTIONS_TOPIC, text_data)
 
+                case "clear_chat":
+                    await self.websocket_producer.send_and_wait(ACTIONS_TOPIC, text_data)
+
         except json.JSONDecodeError:
             logger.error("Ошибка декодирования JSON в receive: %s", text_data)
         except KeyError as e:
@@ -159,9 +162,22 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             case "delete_chat":
                 await self.realtime_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
 
+            case "clear_chat":
+                await self.realtime_producer.send_and_wait(ACTIONS_TOPIC, json.dumps(message))
+
     async def delete_chat_notification(self, event):
         """
         Отправка уведомлений об удалении чата.
+        """
+        await self.send(text_data=json.dumps({
+            "id": event["id"],
+            "type": event["notification_type"],
+            "payload": event["payload"],
+        }))
+
+    async def clear_chat_notification(self, event):
+        """
+        Отправка уведомлений об очищении чата.
         """
         await self.send(text_data=json.dumps({
             "id": event["id"],
@@ -178,9 +194,13 @@ class MessengerConsumer(AsyncWebsocketConsumer):
 
             id = data.get("id")
             chat_id = data["payload"]["chat_id"]
+            chat_type = data["payload"]["chat_type"]
             sender_id = data.get("payload", {}).get("user_id", self.user_id)
 
-            chat_users = get_secret_chat_users(chat_id)
+            if chat_type == "default" and self.user_id == sender_id:
+                await create_message(id, data["payload"])
+
+            chat_users = await get_chat_users(chat_id)
 
             if sender_id not in chat_users or self.user_id not in chat_users:
                 return
@@ -213,15 +233,25 @@ class MessengerConsumer(AsyncWebsocketConsumer):
             type = data.get("type")
             chat_id = data["payload"]["chat_id"]
 
+            chat_users = await get_chat_users(chat_id)
+
             match type:
                 case "delete_chat":
                     id = data.get("id")
-                    await remove_secret_chat(id, chat_id)
+
+                    for chat_user_id in chat_users:
+                        if self.user_id == chat_user_id:
+                            await remove_secret_chat(id, chat_id, chat_user_id)
+
+                case "clear_chat":
+                    id = data.get("id")
+
+                    for chat_user_id in chat_users:
+                        if self.user_id == chat_user_id:
+                            await clear_chat(id, chat_id, chat_user_id)
 
                 case "create_chat":
                     with_user_id = data["payload"]["with_user_id"]
-
-                    chat_users = get_secret_chat_users(chat_id)
 
                     if self.user_id in chat_users and self.user_id != with_user_id:
                         await self.send(text_data=json.dumps(data, ensure_ascii=False))
